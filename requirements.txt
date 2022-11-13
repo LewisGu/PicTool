@@ -1,0 +1,9 @@
+certifi==2021.5.30
+colorama==0.4.4
+configparser==5.2.0
+importlib-resources==5.4.0
+PySide2==5.15.2.1
+shiboken2==5.15.2.1
+tqdm==4.64.0
+wincertstore==0.2
+zipp==3.6.0
