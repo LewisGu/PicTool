@@ -5,11 +5,25 @@ A Small Tool Collection for Easy Process My Photo
 
 ## RAWFileCopyByJPG.py
 
+```
 Python: 3.6.4
 
 other lib edition refer to requirements.txt
+```
 
-copy "same name" raw file by traversing through whole JPG format file in current path
+input jpg and raw file path, copy matched file from raw path into jpg path, which fulfill the condition of "same file name" and "brand fit"
+
+### v2.3 LTSC
+
+1. analysis RAW folder file format to match and infer suitable brand
+2. add input check function and info window, improve stability of software
+3. remove default jpg folder, replace by a editable input
+4. code reconstruction, improve code readability
+
+**TODO List**
+
+1. Improve UI
+2. fix bug
 
 ### v2.0
 
@@ -25,7 +39,7 @@ copy "same name" raw file by traversing through whole JPG format file in current
 
 **TODO List**
 
-Analysize RAW Folder File Format to Match and Infer Suitable Brand
+~~Analysis RAW Folder File Format to Match and Infer Suitable Brand~~
 
 ### v1.0
 
