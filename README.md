@@ -13,6 +13,16 @@ other lib edition refer to requirements.txt
 
 input jpg and raw file path, copy matched file from raw path into jpg path, which fulfill the condition of "same file name" and "brand fit"
 
+### v3.0 LTSC
+
+1. improve python edition to 3.10
+2. add a icon
+3. fix bug
+
+**TODO List**
+
+Enable UI to adapt to screen resolutions.
+
 ### v2.3 LTSC
 
 1. analysis RAW folder file format to match and infer suitable brand
@@ -44,6 +54,14 @@ input jpg and raw file path, copy matched file from raw path into jpg path, whic
 ### v1.0
 
 fulfill the basic function of copy
+
+## TIFF2PNG
+
+Automatically converts TIFF files to PNG format for easier processing of lossless film files obtained from HS1800 scanning.
+
+### v1.0
+
+fulfill the basic function
 
 ## fakefuji.bat
 

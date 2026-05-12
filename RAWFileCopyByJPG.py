@@ -1,460 +1,510 @@
-from fileinput import close
-from pickle import TRUE
-from PySide2.QtCore import Qt
-from PySide2.QtWidgets import QApplication,QComboBox,QMainWindow,QWidget,QPushButton,QLabel,QPlainTextEdit,QMessageBox,QDialog,QDialogButtonBox,QVBoxLayout
-import os,shutil
-from tqdm import tqdm       # 进度条包
-import logging
-import time
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+RAW File Copy by JPG - Optimized Version
+根据JPG文件名自动匹配并复制对应RAW格式文件
+"""
+
+import os
+import shutil
 import sys
+import time
+import logging
 import configparser
+from pathlib import Path
+from typing import List, Tuple, Dict, Optional
 
-default_ini_dir = 'C:\\CopyRAWFileByJpg'
-default_ini_file = 'C:\\CopyRAWFileByJpg\\config.ini'
-now = time.strftime("%Y-%m-%d-%H_%M_%S",time.localtime(time.time())) 
-default_log_file = 'C:\\CopyRAWFileByJpg\\'+now+'.log'
-default_rawformat_dir = {'Canon':'.CR2','Fuji':'.RAF','Nikon':'.NEF','Ricoh':'.DNG','Sony':'.ARW','Pentax':'.PEF','Olympus':'.ORF','Panasonic':'.RW2'}
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QApplication, QComboBox, QMainWindow, QWidget, QPushButton,
+    QLabel, QPlainTextEdit, QMessageBox, QDialog, QDialogButtonBox,
+    QVBoxLayout, QFileDialog
+)
+from PySide6.QtGui import QIcon
 
-# 日志记录格式
-logging.basicConfig(level=logging.DEBUG,
-                format='%(asctime)s %(filename)s[line:%(lineno)d] %(levelname)s %(message)s',
-                datefmt='%Y-%m-%d %a %H:%M:%S',
-                filename=default_log_file,
-                filemode='w')
 
-    #############################################
+# ==================== 常量配置 ====================
 
-    # Public Function #
+# 使用用户目录，避免硬编码D盘
+APP_DIR = Path.home() / "CopyRAWFileByJpg"
+APP_DIR.mkdir(parents=True, exist_ok=True)
 
-    #############################################
+INI_FILE = APP_DIR / "config.ini"
+LOG_FILE = APP_DIR / f"{time.strftime('%Y-%m-%d-%H_%M_%S')}.log"
 
-def logprint(msg):
-    # 仅在日志中打印
+# RAW格式映射表
+RAW_FORMAT_MAP: Dict[str, str] = {
+    'Canon': '.CR2',
+    'Fuji': '.RAF',
+    'Nikon': '.NEF',
+    'Ricoh': '.DNG',
+    'Sony': '.ARW',
+    'Pentax': '.PEF',
+    'Olympus': '.ORF',
+    'Panasonic': '.RW2'
+}
+
+DEFAULT_BRAND = 'Nikon'
+DEFAULT_FORMAT = '.NEF'
+
+
+# ==================== 日志配置 ====================
+
+def setup_logging(log_path: Path) -> None:
+    """配置日志记录"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[
+            logging.FileHandler(log_path, mode='w', encoding='utf-8'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+
+# ==================== 工具函数 ====================
+
+def log_print(msg: str) -> None:
+    """记录日志"""
     logging.info(msg)
 
-def log_screen_print(msg):
-    # 同时在日志和屏幕中打印
-    print(msg)
-    logging.info(msg)
 
-def same_dir(path1,path2):
-    if path1 == path2:
-        return True
-    else:
-        return False
+def ensure_dir(path: Path) -> None:
+    """确保目录存在"""
+    path.mkdir(parents=True, exist_ok=True)
+    log_print(f'Created directory: {path}')
 
-def check_dir(path):
-    # 检查路径是否存在
-    folder = os.path.exists(path)
-    if not folder:
-        return False
-    else:
-        return True
 
-def exist_jpg_file(local_file_list):
-    # 遍历文件列表，获取文件名列表
-    file_suffix_list,file_suffix_dict = get_all_file_suffix_list_dir(local_file_list,False)
-    exist_flag = False
-    for item in file_suffix_list:
-        if item.lower() == 'jpg':
-            exist_flag = True
-    return exist_flag
+def get_file_stem(filename: str) -> str:
+    """获取文件名（不含扩展名），支持多后缀如 .tar.gz"""
+    return Path(filename).stem
 
-def jpg_raw_file_precise_match(jpg_file_list,raw_file_list,rawformat):
-    # 根据JPG文件名 RAW文件名 后缀名精确匹配
-    file_prefix_list = get_all_file_prefix_list(jpg_file_list)
-    for prefix in file_prefix_list:
-        raw_file = prefix + str(rawformat)
-        if raw_file in raw_file_list:
-            return True
-    return False
 
-def mkdir(path):
-    # 创建路径
-    folder = os.path.exists(path)
-    if not folder:  # 判断是否存在文件夹如果不存在则创建为文件夹
-        os.makedirs(path)  
-        logprint('the folder '+path+' has created') 
+def get_file_suffix(filename: str) -> str:
+    """获取文件扩展名（包含点，如 .jpg）"""
+    return Path(filename).suffix
 
-def check_file_exist(filename):
-    # 检查文件是否存在
-    return os.access(filename, os.F_OK)  # 文件存在，返回True,否则返回False
 
-def get_full_filenamelist(filePath):
-    # 获取本路径下所有单文件的完整文件名
-    realfile_list = []
-    filelist =  os.listdir(filePath)
-    for item in filelist:
-        split = item.split(".")
-        if len(split) == 2:
-            realfile_list.append(item)
-    listlength = len(realfile_list)
-    if listlength == 0:
-        return realfile_list,True
-    else:
-        return realfile_list,False
-
-def get_all_file_prefix_list(local_file_list):
-    # 遍历文件列表，获取不带后缀的文件名列表
-    file_prefix_list = []
-    for file in local_file_list:
-        file_split = file.split(".")
-        file_prefix = file_split[0]
-        file_prefix_list.append(file_prefix)
-    return file_prefix_list
-
-def get_all_file_suffix_list_dir(local_file_list,jpg_exclude_flag):
-    # 遍历文件列表，不重复的后缀名列表及后缀字典(jpg_exclude_flag为1时，后缀名不包括jpg)
-    file_suffix_list = []
-    file_suffix_dict = {}
-    for filename in local_file_list:
-        file_split = filename.split(".")
-        file_suffix = file_split[1]
-        file_suffix_lower = file_suffix.lower()
-        if jpg_exclude_flag:
-            if file_suffix_lower != 'jpg':
-                if file_suffix not in file_suffix_list:
-                    file_suffix_list.append(file_suffix)
-                if  file_suffix not in file_suffix_dict:
-                    file_suffix_dict[file_suffix] = 1
-                else :
-                    file_suffix_dict[file_suffix] += 1
-        else:
-            if file_suffix not in file_suffix_list:
-                file_suffix_list.append(file_suffix)
-            if  file_suffix not in file_suffix_dict:
-                file_suffix_dict[file_suffix] = 1
-            else :
-                file_suffix_dict[file_suffix] += 1
-    return file_suffix_list,file_suffix_dict
-
-def construct_auto_analyze_msg(list,dict):
-    # 根据列表和字典，找出最大值，构造提示字符串
-    msg = "RAW文件共 " + str(len(list)) + " 类格式,分别为\n"
-    for item in list:
-        msg = msg + str(item) + " 文件 " + str(dict[item]) + " 个\n"
-    if len(list) == 1:
-        max_key = list[0]
-    else:
-        for key,value in dict.items():
-            if(value == max(dict.values())):
-                max_key = key
-    max_key = "."+max_key
-    new_dict = {v : k for k, v in default_rawformat_dir.items()}
-    brand = new_dict[max_key]
-    msg = msg+"建议匹配 " + str(brand) 
-    return msg,brand
-
-class PicFileList:
-
-    #############################################
-
-    # Picture File List Class #
-    # 读取文件列表后，对该列表进行操作
-
-    #############################################
-    def __init__(self, jpgfileslist, curdir, oridir,formatname):
-        self.jpgfileslist = jpgfileslist
-        self.curdir = curdir
-        self.oridir = oridir
-        # self.raw_file_auto_analyze()
-        self.formatname = formatname
-
-    def main_process(self):
-        # 主方法
-        item_num = len(self.jpgfileslist)
-        copy_success_num = 0
-        copy_failed_num = 0
-        with tqdm(total=item_num) as pbar:
-            for i in range(item_num):
-                jpgname = self.jpgfileslist[i]
-                valid_result = self.one_jpg_process(jpgname)
-                if valid_result == 1:
-                    copy_success_num    = copy_success_num + 1
-                else:
-                    copy_failed_num     = copy_failed_num + 1
-                pbar.update(1)
-                time.sleep(0.1)
-        msg = "success copy "+str(copy_success_num)+" files, failed "+str(copy_failed_num)
-        if copy_failed_num > 0:
-            msg = msg + ",please check log !"
-        log_screen_print(msg)
-
-    def one_jpg_process(self, jpgname):
-        # 每个文件具体方法
-        self.numbername = os.path.splitext(jpgname)[0]
-        file_fullname = self.numbername + self.formatname
-        dstfile = self.curdir + "\\" + file_fullname
-        srcfile = self.oridir + "\\" + file_fullname
-        if (check_file_exist(srcfile)):
-            shutil.copy(srcfile, dstfile)  # 复制文件
-            logprint('copy file' + file_fullname)
-            return 1
-        else:
-            logprint(srcfile + ' not exist in the folder')
-            return 0
-
-class Dialog(QDialog):
-
-    #############################################
-
-    # 弹出框对象
-
-    #############################################
-
-    def __init__(self,Msg,parent=None):
-        super(Dialog, self).__init__(parent)
-        layout=QVBoxLayout(self)
-        self.msg = Msg
-        self.set_flag = False
-        self.label=QLabel(self)
-        self.label.setText(self.msg)
-        layout.addWidget(self.label)
-
-        self.buttonBox=QDialogButtonBox()
-        self.buttonBox.addButton("接受",QDialogButtonBox.AcceptRole)
-        self.buttonBox.addButton("放弃",QDialogButtonBox.RejectRole)
-
-        self.buttonBox.accepted.connect(self.applybrand)
-        self.buttonBox.rejected.connect(self.reject)
-        layout.addWidget(self.buttonBox)
-
-    def applybrand(self):
-        # 接受建议
-        self.set_flag = True
-        self.accept()
-
-    def getResult(self,parent=None):
-        dialog=Dialog(parent)
-        self.set_flag=dialog.exec_()
-        return self.set_flag
-class PicApp(QMainWindow):
+def list_files(directory: Path) -> Tuple[List[str], bool]:
+    """
+    获取目录下所有文件的完整文件名列表
+    返回: (文件列表, 是否为空)
+    """
+    if not directory.exists():
+        return [], True
     
-    #############################################
+    files = [f.name for f in directory.iterdir() if f.is_file()]
+    return files, len(files) == 0
 
-    # UI Class #
 
-    #############################################
+def has_jpg_files(file_list: List[str]) -> bool:
+    """检查文件列表中是否包含JPG文件"""
+    return any(get_file_suffix(f).lower() == '.jpg' for f in file_list)
+
+
+def find_matching_raw_files(jpg_files: List[str], raw_files: List[str], raw_ext: str) -> bool:
+    """
+    检查是否存在文件名匹配的 JPG-RAW 对
+    """
+    jpg_stems = {get_file_stem(f) for f in jpg_files if get_file_suffix(f).lower() == '.jpg'}
+    raw_stems = {get_file_stem(f) for f in raw_files if get_file_suffix(f).lower() == raw_ext.lower()}
+    return not jpg_stems.isdisjoint(raw_stems)
+
+
+def analyze_raw_formats(file_list: List[str]) -> Tuple[str, str]:
+    """
+    分析RAW文件格式，返回建议品牌和提示消息
+    """
+    # 统计非JPG扩展名
+    suffix_counts: Dict[str, int] = {}
+    for f in file_list:
+        ext = get_file_suffix(f)
+        if ext and ext.lower() != '.jpg':
+            suffix_counts[ext] = suffix_counts.get(ext, 0) + 1
     
-    def __init__(self):
-        super(PicApp, self).__init__()
-        self.resize(300, 400)
-        self.setWindowTitle("RAW文件懒人复制")
-        self.init()
-        self.setup_ui()
-        self.set_connect()
+    if not suffix_counts:
+        return "", "未找到任何RAW格式文件"
+    
+    # 找出数量最多的格式
+    max_ext = max(suffix_counts, key=suffix_counts.get)
+    total_types = len(suffix_counts)
+    
+    # 构造消息
+    msg_lines = [f"RAW文件共 {total_types} 类格式："]
+    for ext, count in sorted(suffix_counts.items(), key=lambda x: -x[1]):
+        msg_lines.append(f"  {ext} 文件 {count} 个")
+    
+    # 查找对应品牌
+    brand = None
+    for b, e in RAW_FORMAT_MAP.items():
+        if e.lower() == max_ext.lower():
+            brand = b
+            break
+    
+    if brand:
+        msg_lines.append(f"\n建议匹配品牌：{brand}")
+    else:
+        brand = "Unknown"
+        msg_lines.append(f"\n未识别品牌，使用格式：{max_ext}")
+    
+    return brand, "\n".join(msg_lines)
 
-    def setup_ui(self):
-        # 设置ui界面
-        self.jpgfiledir_label = QLabel(self)
-        self.jpgfiledir_label.setAlignment(Qt.AlignCenter) 
-        self.jpgfiledir_label.setText('JPG文件路径')
-        label_width = self.jpgfiledir_label.width()
-        self.jpgfiledir_label.move(150-label_width/2, 0)
 
-        self.jpgdir_te = QPlainTextEdit(self)
-        self.jpgdir_te.setPlaceholderText("请输入JPG文件源路径")
-        self.jpgdir_te.setEnabled(True)
-        self.jpgdir_te.resize(250, 50)
-        self.jpgdir_te.move(25, 35)
+# ==================== 文件复制类 ====================
 
-        self.rawfiledir_label = QLabel(self)
-        self.rawfiledir_label.setAlignment(Qt.AlignCenter) 
-        self.rawfiledir_label.setText('RAW文件路径')
-        label_width = self.rawfiledir_label.width()
-        self.rawfiledir_label.move(150-label_width/2, 85)
-
-        self.rawdir_te = QPlainTextEdit(self)
-        self.rawdir_te.setPlaceholderText("请输入待匹配的RAW文件源路径")
-        self.rawdir_te.resize(250, 50)
-        self.rawdir_te.move(25, 120)
-
-        self.auto_analyze_btn = QPushButton(self)
-        self.auto_analyze_btn.setText("品牌自动分析")
-        self.auto_analyze_btn.resize(100, 25)
-        self.auto_analyze_btn.move(100, 180)
+class RawFileCopier:
+    """RAW文件复制处理器"""
+    
+    def __init__(self, jpg_files: List[str], jpg_dir: Path, raw_dir: Path, raw_ext: str):
+        self.jpg_files = jpg_files
+        self.jpg_dir = jpg_dir
+        self.raw_dir = raw_dir
+        self.raw_ext = raw_ext
+        self.success_count = 0
+        self.fail_count = 0
+        self.failed_files: List[str] = []
+    
+    def process_all(self) -> Tuple[int, int, List[str]]:
+        """执行所有复制操作"""
+        total = len(self.jpg_files)
         
-        self.brand_label = QLabel(self)
-        self.brand_label.setAlignment(Qt.AlignCenter) 
-        self.brand_label.setText('当前适用品牌')
-        brand_label_width = self.brand_label.width()
-        self.brand_label.move(150-brand_label_width/2, 205)
-
-        self.brand_cbb = QComboBox(self)
-        brandlist = self.brand_list_gen(self.oribrand)
-                
-        self.brand_cbb.resize(100, 20)
-        self.brand_cbb.move(100, 235)
-
-        self.onekey_copy_btn = QPushButton(self)
-        self.onekey_copy_btn.setText("一键复制")
-        self.onekey_copy_btn.resize(100, 50)
-        self.onekey_copy_btn.move(100, 265)
-                
-        self.check_log_btn = QPushButton(self)
-        self.check_log_btn.setText("查看日志")
-        self.check_log_btn.resize(100, 30)
-        self.check_log_btn.move(100, 325)
-
-        self.copyright_label = QLabel(self)
-        self.copyright_label.setText("RAW文件懒人复制v2.3 Copyright By Lewisgu")
-        self.copyright_label.adjustSize()
-        copyright_label_width = self.copyright_label.width()
-        self.copyright_label.move(150-copyright_label_width/2, 380)
-
-    def init(self):
-        # 初始化
-        self.filecopy_valid = False
-        self.cur_logfile = default_log_file
-        self.input_rawdir = ""
-        self.input_jpgdir = ""
-        self.check_ini_file()
-
-    def set_connect(self):
-        # 信号-槽链接
-        self.onekey_copy_btn.clicked.connect(self.one_key_copy_slot)
-        self.auto_analyze_btn.clicked.connect(self.auto_analyze_slot)
-        self.brand_cbb.currentIndexChanged[str].connect(self.change_brand) 
-        self.check_log_btn.clicked.connect(self.check_log_slot)
-
-    def WarrningWindow(self,Msg):
-        # 警告弹窗
-        MessageBox = QMessageBox(self)
-        MessageBox.warning(self, "错误", Msg)
-
-    def CriticalWindow(self,Msg):
-        # 提示弹窗
-        MessageBox = QMessageBox(self)
-        MessageBox.critical(self, "提示", Msg)
-
-    #############################################
-
-                    #Function#
-
-    #############################################
-    def create_ini_file(self):
-        # 创建ini文件
-        self.config.read(default_ini_file)
-        self.config.add_section("baseconf")
-        self.write_ini_file()
-
-    def write_ini_file(self):
-        # 写入配置文件
-        try:
-            self.config.set("baseconf", "brand", self.oribrand)
-            self.config.set("baseconf", "formatname", self.rawformat)
-            self.config.write(open(default_ini_file, "w"))
-        except configparser.DuplicateSectionError:
-            logprint('config wirte error')
-
-    def check_ini_file(self):
-        # 检查ini文件
-        if check_file_exist(default_ini_file):
-            self.config = configparser.ConfigParser()
-            self.config.read(default_ini_file)
-            self.oribrand = self.config.get('baseconf', 'brand')
-            self.rawformat = self.config.get('baseconf', 'formatname')
-            logprint('brand info loaded')
-        else:
-            self.config = configparser.ConfigParser()
-            self.mkdir(default_ini_dir)
-            self.oribrand = 'Nikon'
-            self.rawformat = '.NEF'
-            self.create_ini_file()
-
-    def change_brand(self):
-        # 修改品牌名
-        self.oribrand = self.brand_cbb.currentText()
-        self.rawformat = default_rawformat_dir[self.oribrand]
-        logprint('brand manual switch to ' + self.oribrand)
-
-    def check_log_slot(self):
-        # 通过记事本打开日志文件
-        os.system('notepad '+ default_log_file)
-
-    def check_jpg_raw_dir(self):
-        # 检查jpg路径和raw路径是否合法,是否完全相同,源路径存在JPG文件，且有文件名一致
-        if check_dir(self.input_rawdir) and check_dir(self.input_jpgdir):#路径合法
-            if same_dir(self.input_rawdir,self.input_jpgdir):#路径一致
-                self.WarrningWindow("输入的路径相同，请检查")
+        for i, jpg_name in enumerate(self.jpg_files, 1):
+            result = self._copy_single(jpg_name)
+            if result:
+                self.success_count += 1
             else:
-                if self.jpg_raw_file_match():#两路径有符合格式要求的”JPG-RAW“文件对，且有源路径有JPG
-                    self.filecopy_valid = True
-                else:
-                    self.WarrningWindow("两路径下没有名称一致的文件,或JPG路径下没有JPG文件")
-        else:
-            self.WarrningWindow("JPG或RAW路径非法，请检查")
-
-    def jpg_raw_file_match(self):
-        # 获取源和目的所有文件名的列表，检查是否有重复元素
-        jpg_file_list,flag = get_full_filenamelist(self.input_jpgdir)
-        if exist_jpg_file(jpg_file_list): # 存在JPG文件
-            raw_file_list,flag = get_full_filenamelist(self.input_rawdir)
-            result = jpg_raw_file_precise_match(jpg_file_list,raw_file_list,self.rawformat)
-            return result
-        else:
+                self.fail_count += 1
+            
+            # 每10个文件或最后一个打印进度
+            if i % 10 == 0 or i == total:
+                log_print(f"Progress: {i}/{total} ({self.success_count} success, {self.fail_count} failed)")
+        
+        return self.success_count, self.fail_count, self.failed_files
+    
+    def _copy_single(self, jpg_name: str) -> bool:
+        """复制单个文件对应的RAW"""
+        stem = get_file_stem(jpg_name)
+        raw_name = stem + self.raw_ext
+        
+        src = self.raw_dir / raw_name
+        dst = self.jpg_dir / raw_name
+        
+        if not src.exists():
+            log_print(f"Source not found: {src}")
+            self.failed_files.append(raw_name)
+            return False
+        
+        try:
+            shutil.copy2(src, dst)  # copy2保留元数据
+            log_print(f"Copied: {raw_name}")
+            return True
+        except PermissionError:
+            log_print(f"Permission denied: {raw_name}")
+            self.failed_files.append(raw_name)
+            return False
+        except shutil.SameFileError:
+            log_print(f"Source and destination are the same: {raw_name}")
+            self.failed_files.append(raw_name)
+            return False
+        except Exception as e:
+            log_print(f"Copy failed {raw_name}: {e}")
+            self.failed_files.append(raw_name)
             return False
 
-    def get_jpgfiles_list(self):
-        # 获取源路径下所有JPG文件的列表
-        dstdirs = os.listdir(self.input_jpgdir)
-        full_pic_list = []
-        for file_name in dstdirs:
-            endname = os.path.splitext(file_name)[1]
-            if endname.lower() == '.jpg':
-                full_pic_list.append(file_name)
-        self.jpgfileslist = full_pic_list
 
-    def one_key_copy_slot(self):
-        # 一键复制主函数
-        self.input_jpgdir = self.jpgdir_te.toPlainText()
-        self.input_rawdir = self.rawdir_te.toPlainText()
-        self.check_jpg_raw_dir()
-        if self.filecopy_valid:
-            self.get_jpgfiles_list()
-            picprocess = PicFileList(self.jpgfileslist,self.input_jpgdir,self.input_rawdir,self.rawformat)
-            logprint('start copy file photo by ' + self.oribrand + ' device')
-            picprocess.main_process()
+# ==================== 对话框 ====================
 
-    def brand_list_gen(self,brand):
-        # 重新排列品牌列表,输入的brand排最先
-        list = []
-        list.append(brand)
-        for keyValue in default_rawformat_dir.keys():
-            if keyValue != brand:
-                list.append(keyValue)
-        self.brand_cbb.clear()
-        self.brand_cbb.addItems(list)
-        self.oribrand = brand
+class BrandSuggestDialog(QDialog):
+    """品牌建议对话框"""
+    
+    def __init__(self, message: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("品牌自动分析")
+        self.setMinimumWidth(300)
+        self.accepted_flag = False
+        
+        layout = QVBoxLayout(self)
+        
+        self.label = QLabel(message)
+        self.label.setWordWrap(True)
+        layout.addWidget(self.label)
+        
+        button_box = QDialogButtonBox()
+        accept_btn = button_box.addButton("接受建议", QDialogButtonBox.AcceptRole)
+        reject_btn = button_box.addButton("放弃", QDialogButtonBox.RejectRole)
+        
+        accept_btn.clicked.connect(self._on_accept)
+        reject_btn.clicked.connect(self.reject)
+        layout.addWidget(button_box)
+    
+    def _on_accept(self):
+        self.accepted_flag = True
+        self.accept()
+    
+    @staticmethod
+    def ask(message: str, parent=None) -> bool:
+        """静态方法，显示对话框并返回用户是否接受"""
+        dialog = BrandSuggestDialog(message, parent)
+        dialog.exec()
+        return dialog.accepted_flag
 
-    def brand_advice(self,local_file_list):
-        # 给出建议的品牌
-        file_suffix_list,file_suffix_dict = get_all_file_suffix_list_dir(local_file_list,True)
-        Msg,suggest_brand = construct_auto_analyze_msg(file_suffix_list,file_suffix_dict)
-        set_flag = Dialog.getResult(self,Msg)
-        if set_flag:
-            self.brand_list_gen(suggest_brand)
 
-    def auto_analyze_slot(self):
-        # 分析扩展名，猜测品牌，给出提示
-        self.input_jpgdir = self.jpgdir_te.toPlainText()
-        self.input_rawdir = self.rawdir_te.toPlainText()
-        if check_dir(self.input_rawdir) and check_dir(self.input_jpgdir):
-            local_file_list,empty_flag = get_full_filenamelist(self.input_rawdir)
-            if empty_flag:
-                self.WarrningWindow("本路径下不含任何文件，请检查路径")
-            else:
-                self.brand_advice(local_file_list)
+# ==================== 主窗口 ====================
+
+class PicApp(QMainWindow):
+    """主应用程序窗口"""
+    
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("RAW文件懒人复制 v3.0")
+        self.setFixedSize(320, 420)
+        
+        # 初始化状态
+        self.current_brand = DEFAULT_BRAND
+        self.current_format = DEFAULT_FORMAT
+        self.config = configparser.ConfigParser()
+        
+        self._load_config()
+        self._setup_ui()
+        self._connect_signals()
+    
+    def _setup_ui(self):
+        """设置UI界面"""
+        central = QWidget()
+        self.setCentralWidget(central)
+        
+        # JPG路径
+        self.jpg_label = QLabel("JPG文件路径", central)
+        self.jpg_label.setAlignment(Qt.AlignCenter)
+        self.jpg_label.setGeometry(10, 10, 300, 20)
+        
+        self.jpg_input = QPlainTextEdit(central)
+        self.jpg_input.setPlaceholderText("请输入JPG文件源路径（或点击右侧浏览）")
+        self.jpg_input.setGeometry(10, 35, 250, 50)
+        
+        self.jpg_browse = QPushButton("浏览...", central)
+        self.jpg_browse.setGeometry(270, 35, 40, 50)
+        self.jpg_browse.clicked.connect(self._browse_jpg)
+        
+        # RAW路径
+        self.raw_label = QLabel("RAW文件路径", central)
+        self.raw_label.setAlignment(Qt.AlignCenter)
+        self.raw_label.setGeometry(10, 95, 300, 20)
+        
+        self.raw_input = QPlainTextEdit(central)
+        self.raw_input.setPlaceholderText("请输入待匹配的RAW文件源路径")
+        self.raw_input.setGeometry(10, 120, 250, 50)
+        
+        self.raw_browse = QPushButton("浏览...", central)
+        self.raw_browse.setGeometry(270, 120, 40, 50)
+        self.raw_browse.clicked.connect(self._browse_raw)
+        
+        # 品牌选择
+        self.brand_label = QLabel("当前适用品牌", central)
+        self.brand_label.setAlignment(Qt.AlignCenter)
+        self.brand_label.setGeometry(10, 185, 300, 20)
+        
+        self.brand_combo = QComboBox(central)
+        self._refresh_brand_list(self.current_brand)
+        self.brand_combo.setGeometry(110, 210, 100, 25)
+        self.brand_combo.currentTextChanged.connect(self._on_brand_changed)
+        
+        # 操作按钮
+        self.analyze_btn = QPushButton("品牌自动分析", central)
+        self.analyze_btn.setGeometry(110, 250, 100, 30)
+        
+        self.copy_btn = QPushButton("一键复制", central)
+        self.copy_btn.setGeometry(110, 290, 100, 40)
+        self.copy_btn.setStyleSheet("QPushButton { font-weight: bold; }")
+        
+        self.log_btn = QPushButton("查看日志", central)
+        self.log_btn.setGeometry(110, 345, 100, 30)
+        
+        # 版权信息
+        self.copyright = QLabel("RAW文件懒人复制 v3.0 | Optimized", central)
+        self.copyright.setAlignment(Qt.AlignCenter)
+        self.copyright.setGeometry(10, 390, 300, 20)
+    
+    def _connect_signals(self):
+        """连接信号与槽"""
+        self.copy_btn.clicked.connect(self._on_copy)
+        self.analyze_btn.clicked.connect(self._on_analyze)
+        self.log_btn.clicked.connect(self._on_view_log)
+    
+    def _browse_jpg(self):
+        """浏览选择JPG目录"""
+        path = QFileDialog.getExistingDirectory(self, "选择JPG文件目录")
+        if path:
+            self.jpg_input.setPlainText(path)
+    
+    def _browse_raw(self):
+        """浏览选择RAW目录"""
+        path = QFileDialog.getExistingDirectory(self, "选择RAW文件目录")
+        if path:
+            self.raw_input.setPlainText(path)
+    
+    def _load_config(self):
+        """加载配置文件"""
+        if not INI_FILE.exists():
+            self._save_config()
+            return
+        
+        try:
+            self.config.read(INI_FILE, encoding='utf-8')
+            self.current_brand = self.config.get('baseconf', 'brand', fallback=DEFAULT_BRAND)
+            self.current_format = self.config.get('baseconf', 'formatname', fallback=DEFAULT_FORMAT)
+            log_print(f"Config loaded: brand={self.current_brand}")
+        except Exception as e:
+            log_print(f"Config load failed: {e}")
+            self.current_brand = DEFAULT_BRAND
+            self.current_format = DEFAULT_FORMAT
+    
+    def _save_config(self):
+        """保存配置文件"""
+        try:
+            if 'baseconf' not in self.config.sections():
+                self.config.add_section('baseconf')
+            self.config.set('baseconf', 'brand', self.current_brand)
+            self.config.set('baseconf', 'formatname', self.current_format)
+            with open(INI_FILE, 'w', encoding='utf-8') as f:
+                self.config.write(f)
+        except Exception as e:
+            log_print(f"Config save failed: {e}")
+    
+    def _refresh_brand_list(self, priority_brand: str):
+        """刷新品牌列表，指定品牌置顶"""
+        self.brand_combo.clear()
+        brands = [priority_brand] + [b for b in RAW_FORMAT_MAP.keys() if b != priority_brand]
+        self.brand_combo.addItems(brands)
+    
+    def _on_brand_changed(self, brand: str):
+        """品牌切换"""
+        if brand in RAW_FORMAT_MAP:
+            self.current_brand = brand
+            self.current_format = RAW_FORMAT_MAP[brand]
+            log_print(f"Brand switched to {brand}")
+    
+    def _get_paths(self) -> Tuple[Optional[Path], Optional[Path]]:
+        """获取并验证输入路径"""
+        jpg_text = self.jpg_input.toPlainText().strip()
+        raw_text = self.raw_input.toPlainText().strip()
+        
+        if not jpg_text or not raw_text:
+            QMessageBox.warning(self, "错误", "请输入JPG和RAW文件路径")
+            return None, None
+        
+        jpg_path = Path(jpg_text)
+        raw_path = Path(raw_text)
+        
+        if not jpg_path.exists():
+            QMessageBox.warning(self, "错误", f"JPG路径不存在：\n{jpg_path}")
+            return None, None
+        if not raw_path.exists():
+            QMessageBox.warning(self, "错误", f"RAW路径不存在：\n{raw_path}")
+            return None, None
+        
+        return jpg_path, raw_path
+    
+    def _validate_copy(self, jpg_path: Path, raw_path: Path) -> bool:
+        """验证是否可以执行复制"""
+        if jpg_path.resolve() == raw_path.resolve():
+            QMessageBox.warning(self, "错误", "输入的路径相同，请检查")
+            return False
+        
+        jpg_files, _ = list_files(jpg_path)
+        if not has_jpg_files(jpg_files):
+            QMessageBox.warning(self, "错误", "JPG路径下没有找到JPG文件")
+            return False
+        
+        raw_files, _ = list_files(raw_path)
+        if not find_matching_raw_files(jpg_files, raw_files, self.current_format):
+            QMessageBox.warning(self, "错误", 
+                f"两路径下没有名称一致的 {self.current_format} 文件")
+            return False
+        
+        return True
+    
+    def _on_copy(self):
+        """一键复制"""
+        jpg_path, raw_path = self._get_paths()
+        if not jpg_path or not raw_path:
+            return
+        
+        if not self._validate_copy(jpg_path, raw_path):
+            return
+        
+        # 获取JPG文件列表
+        jpg_files = [f for f in os.listdir(jpg_path) 
+                     if f.lower().endswith('.jpg')]
+        
+        # 执行复制
+        copier = RawFileCopier(jpg_files, jpg_path, raw_path, self.current_format)
+        success, failed, failed_list = copier.process_all()
+        
+        # 显示结果
+        msg = f"复制完成！\n成功：{success} 个\n失败：{failed} 个"
+        if failed > 0:
+            msg += f"\n\n失败文件：{', '.join(failed_list[:5])}"
+            if len(failed_list) > 5:
+                msg += f" 等共 {len(failed_list)} 个"
+            QMessageBox.warning(self, "完成（有失败）", msg)
         else:
-            self.WarrningWindow("路径非法，请检查")
-
+            QMessageBox.information(self, "完成", msg)
+    
+    def _on_analyze(self):
+        """品牌自动分析"""
+        jpg_path, raw_path = self._get_paths()
+        if not jpg_path or not raw_path:
+            return
+        
+        raw_files, is_empty = list_files(raw_path)
+        if is_empty:
+            QMessageBox.warning(self, "错误", "RAW路径下不含任何文件")
+            return
+        
+        suggest_brand, message = analyze_raw_formats(raw_files)
+        if not suggest_brand:
+            QMessageBox.information(self, "分析结果", message)
+            return
+        
+        if BrandSuggestDialog.ask(message, self):
+            self._refresh_brand_list(suggest_brand)
+            self.brand_combo.setCurrentText(suggest_brand)
+    
+    def _on_view_log(self):
+        """查看日志文件"""
+        try:
+            if sys.platform == 'win32':
+                os.startfile(LOG_FILE)
+            else:
+                import subprocess
+                subprocess.run(['xdg-open', str(LOG_FILE)])
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"无法打开日志文件：{e}")
+    
     def closeEvent(self, event):
-        # 固化为最后确定的品牌和格式
-        self.write_ini_file()   
-        logprint('brand change to ' + self.oribrand)
+        """关闭时保存配置"""
+        self._save_config()
+        log_print(f"Application closing, brand={self.current_brand}")
+        event.accept()
+
+
+# ==================== 入口 ====================
 
 if __name__ == '__main__':
+    setup_logging(LOG_FILE)
+    log_print("=" * 50)
+    log_print("Application started")
+    
     app = QApplication(sys.argv)
-    picApp = PicApp()
-    picApp.show()
-    sys.exit(app.exec_())
+    
+    # 设置应用图标（支持相对路径或打包后的路径）
+    icon_path = Path(__file__).parent / "app.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+        log_print(f"Icon loaded: {icon_path}")
+    
+    window = PicApp()
+    window.show()
+    sys.exit(app.exec())
