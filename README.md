@@ -6,12 +6,17 @@ A Small Tool Collection for Easy Process My Photo
 ## RAWFileCopyByJPG.py
 
 ```
-Python: 3.6.4
+Python: 3.10
 
 other lib edition refer to requirements.txt
 ```
 
 input jpg and raw file path, copy matched file from raw path into jpg path, which fulfill the condition of "same file name" and "brand fit"
+
+### v3.1 LTSC
+
+1. improve ui
+2. Enable UI to adapt to screen resolutions.
 
 ### v3.0 LTSC
 

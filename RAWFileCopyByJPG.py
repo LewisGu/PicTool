@@ -1,510 +1,720 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-RAW File Copy by JPG - Optimized Version
-根据JPG文件名自动匹配并复制对应RAW格式文件
-"""
-
+from PySide2.QtCore import Qt, QThread, Signal
+from PySide2.QtWidgets import (
+    QApplication, QComboBox, QMainWindow, QWidget, QPushButton, QLabel,
+    QLineEdit, QMessageBox, QDialog, QVBoxLayout,
+    QHBoxLayout, QProgressBar, QFrame, QSizePolicy
+)
+from PySide2.QtGui import QGuiApplication, QFont, QIcon
 import os
 import shutil
-import sys
-import time
-import logging
-import configparser
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional
+from collections import Counter
+import logging
+import time
+import sys
+import configparser
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QApplication, QComboBox, QMainWindow, QWidget, QPushButton,
-    QLabel, QPlainTextEdit, QMessageBox, QDialog, QDialogButtonBox,
-    QVBoxLayout, QFileDialog
-)
-from PySide6.QtGui import QIcon
+# 高 DPI 适配（交由我们自己按分辨率 scale，不依赖 Qt 的 AA_EnableHighDpiScaling）
+QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
 
+# ===== 基准分辨率：3180 x 2160 =====
+BASE_W = 3180
+BASE_H = 2160
 
-# ==================== 常量配置 ====================
+# —— 基准尺寸（像素，在 3180×2160 下测得舒适）——
+BASE_WIN_W        = 720      # 窗口初始宽（收窄）
+BASE_WIN_H        = 820      # 窗口初始高（大字需要更高）
+BASE_WIN_MIN_W    = 520      # 窗口最小宽（收窄）
+BASE_WIN_MIN_H    = 680      # 窗口最小高
 
-# 使用用户目录，避免硬编码D盘
-APP_DIR = Path.home() / "CopyRAWFileByJpg"
-APP_DIR.mkdir(parents=True, exist_ok=True)
+FONT_TITLE_PX     = 34       # 标题：RAW 文件懒人复制（放大）
+FONT_BODY_PX      = 20       # 正文：卡片标题、按钮、输入框（放大）
+FONT_SMALL_PX     = 15       # 状态行、版权（放大）
+FONT_PROGRESS_PX  = 14       # 进度条文字（放大）
 
-INI_FILE = APP_DIR / "config.ini"
-LOG_FILE = APP_DIR / f"{time.strftime('%Y-%m-%d-%H_%M_%S')}.log"
+HEIGHT_INPUT      = 56       # QLineEdit / QComboBox
+HEIGHT_BTN        = 60       # 普通按钮
+HEIGHT_BTN_MAIN   = 72       # 绿色一键复制
+HEIGHT_PROGRESS   = 36       # 进度条
+HEIGHT_LABEL      = 28       # 卡片内标题
 
-# RAW格式映射表
-RAW_FORMAT_MAP: Dict[str, str] = {
-    'Canon': '.CR2',
-    'Fuji': '.RAF',
-    'Nikon': '.NEF',
-    'Ricoh': '.DNG',
-    'Sony': '.ARW',
-    'Pentax': '.PEF',
-    'Olympus': '.ORF',
-    'Panasonic': '.RW2'
+WIDTH_INPUT       = 380      # QLineEdit 最小宽度
+WIDTH_COMBO       = 220      # QComboBox 最小宽度
+WIDTH_BTN         = 200      # 普通按钮最小宽度
+WIDTH_BTN_MAIN    = 240      # 一键复制按钮最小宽度
+WIDTH_PROGRESS    = 380      # 进度条最小宽度
+
+MAIN_MARGIN_L     = 22
+MAIN_MARGIN_T     = 16
+MAIN_MARGIN_R     = 22
+MAIN_MARGIN_B     = 16
+MAIN_SPACING       = 14
+
+CARD_MARGIN_L    = 18
+CARD_MARGIN_T    = 14
+CARD_MARGIN_R    = 18
+CARD_MARGIN_B    = 14
+CARD_SPACING       = 8
+
+# 日志配置
+DEFAULT_INI_DIR = Path(os.path.expanduser("~")) / "CopyRAWFileByJpg"
+DEFAULT_INI_FILE = DEFAULT_INI_DIR / "config.ini"
+DEFAULT_LOG_DIR = DEFAULT_INI_DIR / "logs"
+DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+NOW = time.strftime("%Y-%m-%d-%H_%M_%S", time.localtime())
+DEFAULT_LOG_FILE = DEFAULT_LOG_DIR / f"{NOW}.log"
+
+DEFAULT_RAW_FORMAT = {
+    "Canon": ".CR2", "Fuji": ".RAF", "Nikon": ".NEF", "Ricoh": ".DNG",
+    "Sony": ".ARW", "Pentax": ".PEF", "Olympus": ".ORF", "Panasonic": ".RW2"
 }
 
-DEFAULT_BRAND = 'Nikon'
-DEFAULT_FORMAT = '.NEF'
+# 图标路径配置（支持 PyInstaller 打包）
+def get_app_icon_path():
+    """获取应用图标路径，兼容开发环境和 PyInstaller 打包"""
+    icon_name = "app.ico"
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # PyInstaller 打包后的临时目录
+        return Path(sys._MEIPASS) / "resources" / icon_name
+    else:
+        # 开发环境
+        return Path(__file__).parent / "resources" / icon_name
+
+APP_ICON_PATH = get_app_icon_path()
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(filename)s[line:%(lineno)d] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %a %H:%M:%S",
+    filename=str(DEFAULT_LOG_FILE),
+    filemode="w"
+)
 
 
-# ==================== 日志配置 ====================
-
-def setup_logging(log_path: Path) -> None:
-    """配置日志记录"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[
-            logging.FileHandler(log_path, mode='w', encoding='utf-8'),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
-
-
-# ==================== 工具函数 ====================
-
-def log_print(msg: str) -> None:
-    """记录日志"""
+def log_print(msg):
     logging.info(msg)
 
 
-def ensure_dir(path: Path) -> None:
-    """确保目录存在"""
-    path.mkdir(parents=True, exist_ok=True)
-    log_print(f'Created directory: {path}')
+def log_screen_print(msg):
+    print(msg)
+    logging.info(msg)
 
 
-def get_file_stem(filename: str) -> str:
-    """获取文件名（不含扩展名），支持多后缀如 .tar.gz"""
-    return Path(filename).stem
+def check_dir(path):
+    return Path(path).is_dir()
 
 
-def get_file_suffix(filename: str) -> str:
-    """获取文件扩展名（包含点，如 .jpg）"""
-    return Path(filename).suffix
+def exist_jpg_file(file_list):
+    for f in file_list:
+        if f.suffix.lower() == ".jpg":
+            return True
+    return False
 
 
-def list_files(directory: Path) -> Tuple[List[str], bool]:
-    """
-    获取目录下所有文件的完整文件名列表
-    返回: (文件列表, 是否为空)
-    """
-    if not directory.exists():
+def jpg_raw_file_precise_match(jpg_files, raw_files, raw_format):
+    jpg_prefixes = {f.stem for f in jpg_files}
+    raw_prefixes = {f.stem for f in raw_files if f.suffix.lower() == raw_format.lower()}
+    return bool(jpg_prefixes & raw_prefixes)
+
+
+def mkdir(path):
+    p = Path(path)
+    if not p.exists():
+        p.mkdir(parents=True, exist_ok=True)
+        log_print(f"the folder {path} has created")
+
+
+def get_files_in_dir(file_path):
+    p = Path(file_path)
+    if not p.is_dir():
         return [], True
-    
-    files = [f.name for f in directory.iterdir() if f.is_file()]
+    files = [f for f in p.iterdir() if f.is_file()]
     return files, len(files) == 0
 
 
-def has_jpg_files(file_list: List[str]) -> bool:
-    """检查文件列表中是否包含JPG文件"""
-    return any(get_file_suffix(f).lower() == '.jpg' for f in file_list)
-
-
-def find_matching_raw_files(jpg_files: List[str], raw_files: List[str], raw_ext: str) -> bool:
-    """
-    检查是否存在文件名匹配的 JPG-RAW 对
-    """
-    jpg_stems = {get_file_stem(f) for f in jpg_files if get_file_suffix(f).lower() == '.jpg'}
-    raw_stems = {get_file_stem(f) for f in raw_files if get_file_suffix(f).lower() == raw_ext.lower()}
-    return not jpg_stems.isdisjoint(raw_stems)
-
-
-def analyze_raw_formats(file_list: List[str]) -> Tuple[str, str]:
-    """
-    分析RAW文件格式，返回建议品牌和提示消息
-    """
-    # 统计非JPG扩展名
-    suffix_counts: Dict[str, int] = {}
+def get_all_file_suffix_info(file_list, exclude_jpg=False):
+    suffix_list = []
+    suffix_dict = Counter()
     for f in file_list:
-        ext = get_file_suffix(f)
-        if ext and ext.lower() != '.jpg':
-            suffix_counts[ext] = suffix_counts.get(ext, 0) + 1
-    
-    if not suffix_counts:
-        return "", "未找到任何RAW格式文件"
-    
-    # 找出数量最多的格式
-    max_ext = max(suffix_counts, key=suffix_counts.get)
-    total_types = len(suffix_counts)
-    
-    # 构造消息
-    msg_lines = [f"RAW文件共 {total_types} 类格式："]
-    for ext, count in sorted(suffix_counts.items(), key=lambda x: -x[1]):
-        msg_lines.append(f"  {ext} 文件 {count} 个")
-    
-    # 查找对应品牌
-    brand = None
-    for b, e in RAW_FORMAT_MAP.items():
-        if e.lower() == max_ext.lower():
-            brand = b
-            break
-    
-    if brand:
-        msg_lines.append(f"\n建议匹配品牌：{brand}")
-    else:
-        brand = "Unknown"
-        msg_lines.append(f"\n未识别品牌，使用格式：{max_ext}")
-    
-    return brand, "\n".join(msg_lines)
+        suffix = f.suffix.lstrip(".").lower()
+        if not suffix:
+            continue
+        if exclude_jpg and suffix == "jpg":
+            continue
+        if suffix not in suffix_list:
+            suffix_list.append(suffix)
+        suffix_dict[suffix] += 1
+    return suffix_list, suffix_dict
 
 
-# ==================== 文件复制类 ====================
-
-class RawFileCopier:
-    """RAW文件复制处理器"""
-    
-    def __init__(self, jpg_files: List[str], jpg_dir: Path, raw_dir: Path, raw_ext: str):
-        self.jpg_files = jpg_files
-        self.jpg_dir = jpg_dir
-        self.raw_dir = raw_dir
-        self.raw_ext = raw_ext
-        self.success_count = 0
-        self.fail_count = 0
-        self.failed_files: List[str] = []
-    
-    def process_all(self) -> Tuple[int, int, List[str]]:
-        """执行所有复制操作"""
-        total = len(self.jpg_files)
-        
-        for i, jpg_name in enumerate(self.jpg_files, 1):
-            result = self._copy_single(jpg_name)
-            if result:
-                self.success_count += 1
-            else:
-                self.fail_count += 1
-            
-            # 每10个文件或最后一个打印进度
-            if i % 10 == 0 or i == total:
-                log_print(f"Progress: {i}/{total} ({self.success_count} success, {self.fail_count} failed)")
-        
-        return self.success_count, self.fail_count, self.failed_files
-    
-    def _copy_single(self, jpg_name: str) -> bool:
-        """复制单个文件对应的RAW"""
-        stem = get_file_stem(jpg_name)
-        raw_name = stem + self.raw_ext
-        
-        src = self.raw_dir / raw_name
-        dst = self.jpg_dir / raw_name
-        
-        if not src.exists():
-            log_print(f"Source not found: {src}")
-            self.failed_files.append(raw_name)
-            return False
-        
-        try:
-            shutil.copy2(src, dst)  # copy2保留元数据
-            log_print(f"Copied: {raw_name}")
-            return True
-        except PermissionError:
-            log_print(f"Permission denied: {raw_name}")
-            self.failed_files.append(raw_name)
-            return False
-        except shutil.SameFileError:
-            log_print(f"Source and destination are the same: {raw_name}")
-            self.failed_files.append(raw_name)
-            return False
-        except Exception as e:
-            log_print(f"Copy failed {raw_name}: {e}")
-            self.failed_files.append(raw_name)
-            return False
+def construct_auto_analyze_msg(suffix_list, suffix_dict):
+    msg = f"RAW 文件共 {len(suffix_list)} 类格式，分别为\n"
+    for item in suffix_list:
+        msg += f"  {item} 文件 {suffix_dict[item]} 个\n"
+    if suffix_list:
+        max_key = max(suffix_list, key=lambda k: suffix_dict[k])
+        max_key = f".{max_key}"
+        brand_map = {v: k for k, v in DEFAULT_RAW_FORMAT.items()}
+        brand = brand_map.get(max_key, "Unknown")
+        msg += f"\n建议匹配：{brand}"
+        return msg, brand
+    return "未检测到 RAW 文件", "Unknown"
 
 
-# ==================== 对话框 ====================
+class CopyWorker(QThread):
+    progress = Signal(int)
+    finished_copy = Signal(int, int, str)
+    log_msg = Signal(str)
 
-class BrandSuggestDialog(QDialog):
-    """品牌建议对话框"""
-    
-    def __init__(self, message: str, parent=None):
+    def __init__(self, jpg_files, jpg_dir, raw_dir, raw_format, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("品牌自动分析")
-        self.setMinimumWidth(300)
-        self.accepted_flag = False
-        
+        self.jpg_files = jpg_files
+        self.jpg_dir = Path(jpg_dir)
+        self.raw_dir = Path(raw_dir)
+        self.raw_format = raw_format
+        self._is_running = True
+
+    def run(self):
+        success = 0
+        failed = 0
+        total = len(self.jpg_files)
+        for i, jpg_file in enumerate(self.jpg_files, 1):
+            if not self._is_running:
+                break
+            name = Path(jpg_file).stem
+            raw_name = name + self.raw_format
+            src = self.raw_dir / raw_name
+            dst = self.jpg_dir / raw_name
+            if src.exists():
+                try:
+                    shutil.copy2(str(src), str(dst))
+                    log_print(f"copy file {raw_name}")
+                    success += 1
+                except Exception as e:
+                    log_print(f"copy failed {raw_name}: {e}")
+                    failed += 1
+            else:
+                log_print(f"{src} not exist in the folder")
+                failed += 1
+            self.progress.emit(int(i / total * 100))
+        msg = f"成功复制 {success} 个文件，失败 {failed} 个"
+        if failed > 0:
+            msg += "，请检查日志！"
+        self.finished_copy.emit(success, failed, msg)
+
+    def stop(self):
+        self._is_running = False
+        self.wait(1000)
+
+
+class BrandDialog(QDialog):
+    def __init__(self, msg, scale, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("品牌分析建议")
+        s = scale
+
+        self.setMinimumWidth(int(360 * s))
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
         layout = QVBoxLayout(self)
-        
-        self.label = QLabel(message)
-        self.label.setWordWrap(True)
-        layout.addWidget(self.label)
-        
-        button_box = QDialogButtonBox()
-        accept_btn = button_box.addButton("接受建议", QDialogButtonBox.AcceptRole)
-        reject_btn = button_box.addButton("放弃", QDialogButtonBox.RejectRole)
-        
-        accept_btn.clicked.connect(self._on_accept)
-        reject_btn.clicked.connect(self.reject)
-        layout.addWidget(button_box)
-    
-    def _on_accept(self):
-        self.accepted_flag = True
-        self.accept()
-    
-    @staticmethod
-    def ask(message: str, parent=None) -> bool:
-        """静态方法，显示对话框并返回用户是否接受"""
-        dialog = BrandSuggestDialog(message, parent)
-        dialog.exec()
-        return dialog.accepted_flag
+        layout.setContentsMargins(int(22*s), int(18*s), int(22*s), int(16*s))
+        layout.setSpacing(int(12*s))
 
+        font_body = QFont()
+        font_body.setPixelSize(int(FONT_BODY_PX * s))
+        font_small = QFont()
+        font_small.setPixelSize(int(FONT_SMALL_PX * s))
 
-# ==================== 主窗口 ====================
+        lbl = QLabel(msg)
+        lbl.setFont(font_body)
+        lbl.setWordWrap(True)
+        lbl.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        lbl.setMinimumHeight(int(90 * s))
+        lbl.setStyleSheet("color:#333;")
+        layout.addWidget(lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        ok_btn = QPushButton("接受")
+        ok_btn.setFont(font_body)
+        ok_btn.setCursor(Qt.PointingHandCursor)
+        ok_btn.setMinimumHeight(int(HEIGHT_BTN * s))
+        ok_btn.setStyleSheet(
+            "QPushButton{background:#2196F3;color:white;border:none;border-radius:6px;padding:4px 18px;}"
+            "QPushButton:hover{background:#1976D2;}"
+            "QPushButton:pressed{background:#0D47A1;}"
+        )
+        cancel_btn = QPushButton("放弃")
+        cancel_btn.setFont(font_body)
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.setMinimumHeight(int(HEIGHT_BTN * s))
+        cancel_btn.setStyleSheet(
+            "QPushButton{background:#9E9E9E;color:white;border:none;border-radius:6px;padding:4px 18px;}"
+            "QPushButton:hover{background:#757575;}"
+        )
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
 
 class PicApp(QMainWindow):
-    """主应用程序窗口"""
-    
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("RAW文件懒人复制 v3.0")
-        self.setFixedSize(320, 420)
-        
-        # 初始化状态
-        self.current_brand = DEFAULT_BRAND
-        self.current_format = DEFAULT_FORMAT
-        self.config = configparser.ConfigParser()
-        
-        self._load_config()
-        self._setup_ui()
-        self._connect_signals()
-    
-    def _setup_ui(self):
-        """设置UI界面"""
+
+        # —— 1. 从屏幕信息计算 scale ——
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableVirtualGeometry()
+            sw, sh = avail.width(), avail.height()
+        else:
+            sw, sh = BASE_W, BASE_H
+
+        # 相对基准 3180×2160 的比例，取较小者；限制在 [0.6, 1.5]
+        scale = min(sw / BASE_W, sh / BASE_H)
+        if scale < 0.6: scale = 0.6
+        if scale > 1.5: scale = 1.5
+        # 如果当前屏就是或接近基准，scale 给 1.0
+        if abs(sw - BASE_W) < 80 and abs(sh - BASE_H) < 80:
+            scale = 1.0
+        self.scale = scale
+        s = scale
+
+        # —— 2. 字体（全部像素字号）——
+        font_title = QFont()
+        font_title.setPixelSize(int(FONT_TITLE_PX * s))
+        font_title.setBold(True)
+        self.font_title = font_title
+
+        font_body = QFont()
+        font_body.setPixelSize(int(FONT_BODY_PX * s))
+        self.font_body = font_body
+
+        font_small = QFont()
+        font_small.setPixelSize(int(FONT_SMALL_PX * s))
+        self.font_small = font_small
+
+        font_progress = QFont()
+        font_progress.setPixelSize(int(FONT_PROGRESS_PX * s))
+        self.font_progress = font_progress
+
+        # —— 3. 窗口尺寸 ——
+        self.setWindowTitle("RAW 文件懒人复制 v3.0")
+        self.resize(int(BASE_WIN_W * s), int(BASE_WIN_H * s))
+        self.setMinimumSize(int(BASE_WIN_MIN_W * s), int(BASE_WIN_MIN_H * s))
+        self.setFont(font_body)
+
+        # —— 4. 窗口图标 —
+        if APP_ICON_PATH.exists():
+            self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
+        else:
+            log_print("图标文件未找到: " + str(APP_ICON_PATH))
+
+        self.init_data()
+        self.setup_ui()
+        self.set_connect()
+
+    # 便捷：按 scale 缩放整数
+    def v(self, base):
+        return int(base * self.scale)
+
+    def setup_ui(self):
+        s = self.scale
         central = QWidget()
+        central.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        central.setFont(self.font_body)
         self.setCentralWidget(central)
-        
-        # JPG路径
-        self.jpg_label = QLabel("JPG文件路径", central)
-        self.jpg_label.setAlignment(Qt.AlignCenter)
-        self.jpg_label.setGeometry(10, 10, 300, 20)
-        
-        self.jpg_input = QPlainTextEdit(central)
-        self.jpg_input.setPlaceholderText("请输入JPG文件源路径（或点击右侧浏览）")
-        self.jpg_input.setGeometry(10, 35, 250, 50)
-        
-        self.jpg_browse = QPushButton("浏览...", central)
-        self.jpg_browse.setGeometry(270, 35, 40, 50)
-        self.jpg_browse.clicked.connect(self._browse_jpg)
-        
-        # RAW路径
-        self.raw_label = QLabel("RAW文件路径", central)
-        self.raw_label.setAlignment(Qt.AlignCenter)
-        self.raw_label.setGeometry(10, 95, 300, 20)
-        
-        self.raw_input = QPlainTextEdit(central)
-        self.raw_input.setPlaceholderText("请输入待匹配的RAW文件源路径")
-        self.raw_input.setGeometry(10, 120, 250, 50)
-        
-        self.raw_browse = QPushButton("浏览...", central)
-        self.raw_browse.setGeometry(270, 120, 40, 50)
-        self.raw_browse.clicked.connect(self._browse_raw)
-        
-        # 品牌选择
-        self.brand_label = QLabel("当前适用品牌", central)
-        self.brand_label.setAlignment(Qt.AlignCenter)
-        self.brand_label.setGeometry(10, 185, 300, 20)
-        
-        self.brand_combo = QComboBox(central)
-        self._refresh_brand_list(self.current_brand)
-        self.brand_combo.setGeometry(110, 210, 100, 25)
-        self.brand_combo.currentTextChanged.connect(self._on_brand_changed)
-        
-        # 操作按钮
-        self.analyze_btn = QPushButton("品牌自动分析", central)
-        self.analyze_btn.setGeometry(110, 250, 100, 30)
-        
-        self.copy_btn = QPushButton("一键复制", central)
-        self.copy_btn.setGeometry(110, 290, 100, 40)
-        self.copy_btn.setStyleSheet("QPushButton { font-weight: bold; }")
-        
-        self.log_btn = QPushButton("查看日志", central)
-        self.log_btn.setGeometry(110, 345, 100, 30)
-        
-        # 版权信息
-        self.copyright = QLabel("RAW文件懒人复制 v3.0 | Optimized", central)
-        self.copyright.setAlignment(Qt.AlignCenter)
-        self.copyright.setGeometry(10, 390, 300, 20)
-    
-    def _connect_signals(self):
-        """连接信号与槽"""
-        self.copy_btn.clicked.connect(self._on_copy)
-        self.analyze_btn.clicked.connect(self._on_analyze)
-        self.log_btn.clicked.connect(self._on_view_log)
-    
-    def _browse_jpg(self):
-        """浏览选择JPG目录"""
-        path = QFileDialog.getExistingDirectory(self, "选择JPG文件目录")
-        if path:
-            self.jpg_input.setPlainText(path)
-    
-    def _browse_raw(self):
-        """浏览选择RAW目录"""
-        path = QFileDialog.getExistingDirectory(self, "选择RAW文件目录")
-        if path:
-            self.raw_input.setPlainText(path)
-    
-    def _load_config(self):
-        """加载配置文件"""
-        if not INI_FILE.exists():
-            self._save_config()
-            return
-        
+
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(self.v(MAIN_MARGIN_L), self.v(MAIN_MARGIN_T),
+                                        self.v(MAIN_MARGIN_R), self.v(MAIN_MARGIN_B))
+        main_layout.setSpacing(self.v(MAIN_SPACING))
+
+        # === 标题 ===
+        title_label = QLabel("RAW 文件懒人复制")
+        title_label.setFont(self.font_title)
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("color:#1976D2;")
+        title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        title_label.setMinimumHeight(self.v(HEIGHT_LABEL + 18))
+        main_layout.addWidget(title_label)
+
+        # —— 卡片工厂 ——
+        def make_card():
+            card = QFrame()
+            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            card.setStyleSheet(
+                "QFrame{background:#ffffff;border:1px solid #e0e0e0;border-radius:6px;}"
+            )
+            return card
+
+        card_ml = self.v(CARD_MARGIN_L)
+        card_mt = self.v(CARD_MARGIN_T)
+        card_mr = self.v(CARD_MARGIN_R)
+        card_mb = self.v(CARD_MARGIN_B)
+        card_sp = self.v(CARD_SPACING)
+
+        h_label = self.v(HEIGHT_LABEL)
+        h_input = self.v(HEIGHT_INPUT)
+        h_btn   = self.v(HEIGHT_BTN)
+        h_btn_main = self.v(HEIGHT_BTN_MAIN)
+        h_prog  = self.v(HEIGHT_PROGRESS)
+
+        w_input = self.v(WIDTH_INPUT)
+        w_combo = self.v(WIDTH_COMBO)
+        w_btn   = self.v(WIDTH_BTN)
+        w_btn_main = self.v(WIDTH_BTN_MAIN)
+        w_prog  = self.v(WIDTH_PROGRESS)
+
+        pad_px = self.v(10)
+        ddw_px = self.v(26)
+        ar1_px = self.v(5)
+        ar2_px = self.v(6)
+        input_style = (
+            "QLineEdit{background:#ffffff;border:1px solid #cccccc;border-radius:6px;"
+            "padding:0 " + str(pad_px) + "px;color:#222;selection-background-color:#BBDEFB;}"
+            "QLineEdit:focus{border:1px solid #2196F3;}"
+        )
+        combo_style = (
+            "QComboBox{background:#ffffff;border:1px solid #cccccc;border-radius:6px;"
+            "padding:0 " + str(pad_px) + "px;color:#222;}"
+            "QComboBox:focus{border:1px solid #2196F3;}"
+            "QComboBox::drop-down{subcontrol-origin:padding;subcontrol-position:top right;"
+            "width:" + str(ddw_px) + "px;border-left:1px solid #e0e0e0;border-top-right-radius:6px;"
+            "border-bottom-right-radius:6px;}"
+            "QComboBox::down-arrow{image:none;"
+            "border-left:" + str(ar1_px) + "px solid transparent;"
+            "border-right:" + str(ar1_px) + "px solid transparent;"
+            "border-top:" + str(ar2_px) + "px solid #666666;}}"
+        )
+
+        # === 路径卡片（JPG + RAW 合并）===
+        path_card = make_card()
+        path_layout = QVBoxLayout(path_card)
+        path_layout.setContentsMargins(card_ml, card_mt, card_mr, card_mb)
+        path_layout.setSpacing(card_sp)
+
+        def add_label_row(text, parent_layout):
+            lab = QLabel(text)
+            lab.setFont(self.font_body)
+            lab.setStyleSheet("font-weight:bold;color:#555;")
+            lab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            lab.setMinimumHeight(h_label)
+            parent_layout.addWidget(lab)
+
+        def add_input_row(placeholder, parent_layout):
+            le = QLineEdit()
+            le.setFont(self.font_body)
+            le.setPlaceholderText(placeholder)
+            le.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            le.setMinimumSize(w_input, h_input)
+            le.setStyleSheet(input_style)
+            parent_layout.addWidget(le)
+            return le
+
+        add_label_row("JPG 文件路径", path_layout)
+        self.jpgdir_le = add_input_row(
+            "请输入 JPG 文件源路径（例如：D:\\Photos\\JPG）", path_layout
+        )
+        path_layout.addSpacing(self.v(4))
+        add_label_row("RAW 文件路径", path_layout)
+        self.rawdir_le = add_input_row(
+            "请输入待匹配的 RAW 文件源路径（例如：D:\\Photos\\RAW）", path_layout
+        )
+
+        main_layout.addWidget(path_card)
+
+        # === 品牌与格式卡片 ===
+        brand_card = make_card()
+        brand_layout = QVBoxLayout(brand_card)
+        brand_layout.setContentsMargins(card_ml, card_mt, card_mr, card_mb)
+        brand_layout.setSpacing(card_sp)
+
+        add_label_row("品牌与格式", brand_layout)
+
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(self.v(10))
+        brand_lab = QLabel("当前适用品牌:")
+        brand_lab.setFont(self.font_body)
+        brand_lab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        brand_lab.setMinimumHeight(h_label)
+        brand_row.addWidget(brand_lab)
+
+        self.brand_cbb = QComboBox()
+        self.brand_cbb.setFont(self.font_body)
+        self.brand_cbb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.brand_cbb.setMinimumSize(w_combo, h_input)
+        self.brand_cbb.setStyleSheet(combo_style)
+        brand_row.addWidget(self.brand_cbb, 1)
+        brand_layout.addLayout(brand_row)
+
+        self.auto_analyze_btn = QPushButton("品牌自动分析")
+        self.auto_analyze_btn.setFont(self.font_body)
+        self.auto_analyze_btn.setCursor(Qt.PointingHandCursor)
+        self.auto_analyze_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.auto_analyze_btn.setMinimumSize(w_btn, h_btn)
+        self.auto_analyze_btn.setStyleSheet(
+            "QPushButton{background:#FF9800;color:white;border:none;border-radius:6px;"
+            "padding:4px 16px;font-weight:bold;}"
+            "QPushButton:hover{background:#F57C00;}"
+            "QPushButton:pressed{background:#E65100;}"
+            "QPushButton:disabled{background:#E0C79A;}"
+        )
+        brand_layout.addWidget(self.auto_analyze_btn)
+
+        main_layout.addWidget(brand_card)
+
+        # === 操作卡片 ===
+        action_card = make_card()
+        action_layout = QVBoxLayout(action_card)
+        action_layout.setContentsMargins(card_ml, card_mt, card_mr, card_mb)
+        action_layout.setSpacing(card_sp)
+
+        add_label_row("操作", action_layout)
+
+        self.onekey_copy_btn = QPushButton("一键复制")
+        self.onekey_copy_btn.setFont(self.font_body)
+        self.onekey_copy_btn.setCursor(Qt.PointingHandCursor)
+        self.onekey_copy_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.onekey_copy_btn.setMinimumSize(w_btn_main, h_btn_main)
+        self.onekey_copy_btn.setStyleSheet(
+            "QPushButton{background:#4CAF50;color:white;border:none;border-radius:6px;"
+            "padding:4px 16px;font-weight:bold;}"
+            "QPushButton:hover{background:#43A047;}"
+            "QPushButton:pressed{background:#2E7D32;}"
+            "QPushButton:disabled{background:#A5D6A7;}"
+        )
+        action_layout.addWidget(self.onekey_copy_btn)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setAlignment(Qt.AlignCenter)
+        self.progress_bar.setFont(self.font_progress)
+        self.progress_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.progress_bar.setMinimumSize(w_prog, h_prog)
+        self.progress_bar.setStyleSheet(
+            "QProgressBar{background:#eeeeee;border:1px solid #cccccc;border-radius:4px;"
+            "text-align:center;color:#333;padding:0px;}"
+            "QProgressBar::chunk{background:#4CAF50;border-radius:3px;}"
+        )
+        action_layout.addWidget(self.progress_bar)
+
+        self.check_log_btn = QPushButton("查看日志")
+        self.check_log_btn.setFont(self.font_body)
+        self.check_log_btn.setCursor(Qt.PointingHandCursor)
+        self.check_log_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.check_log_btn.setMinimumSize(w_btn, h_btn)
+        self.check_log_btn.setStyleSheet(
+            "QPushButton{background:#607D8B;color:white;border:none;border-radius:6px;"
+            "padding:4px 16px;font-weight:bold;}"
+            "QPushButton:hover{background:#546E7A;}"
+            "QPushButton:pressed{background:#37474F;}"
+            "QPushButton:disabled{background:#B0BEC5;}"
+        )
+        action_layout.addWidget(self.check_log_btn)
+
+        main_layout.addWidget(action_card)
+
+        # stretch 把卡片和底部状态行分开
+        main_layout.addStretch(1)
+
+        # === 状态行 ===
+        self.status_label = QLabel("就绪")
+        self.status_label.setFont(self.font_small)
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("color:#555;")
+        self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.status_label.setMinimumHeight(self.v(HEIGHT_LABEL))
+        main_layout.addWidget(self.status_label)
+
+        # === 版权信息 ===
+        copyright_label = QLabel("RAW 文件懒人复制 v3.0 \u00b7 Copyright By Lewisgu")
+        copyright_label.setFont(self.font_small)
+        copyright_label.setAlignment(Qt.AlignCenter)
+        copyright_label.setStyleSheet("color:#9E9E9E;")
+        copyright_label.setWordWrap(True)
+        copyright_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        copyright_label.setMinimumHeight(self.v(HEIGHT_LABEL))
+        main_layout.addWidget(copyright_label)
+
+        # —— 最后填充下拉，避免信号回调依赖未初始化对象 ——
+        self.brand_list_gen(self.oribrand)
+
+    def init_data(self):
+        self.filecopy_valid = False
+        self.cur_logfile = str(DEFAULT_LOG_FILE)
+        self.input_rawdir = ""
+        self.input_jpgdir = ""
+        self.copy_worker = None
+        self.check_ini_file()
+
+    def set_connect(self):
+        self.onekey_copy_btn.clicked.connect(self.one_key_copy_slot)
+        self.auto_analyze_btn.clicked.connect(self.auto_analyze_slot)
+        self.brand_cbb.currentIndexChanged[str].connect(self.change_brand)
+        self.check_log_btn.clicked.connect(self.check_log_slot)
+
+    def warning_window(self, msg):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("错误")
+        box.setText(msg)
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec_()
+
+    def info_window(self, msg):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("提示")
+        box.setText(msg)
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec_()
+
+    def create_ini_file(self):
+        self.config.read(str(DEFAULT_INI_FILE))
+        if not self.config.has_section("baseconf"):
+            self.config.add_section("baseconf")
+        self.write_ini_file()
+
+    def write_ini_file(self):
         try:
-            self.config.read(INI_FILE, encoding='utf-8')
-            self.current_brand = self.config.get('baseconf', 'brand', fallback=DEFAULT_BRAND)
-            self.current_format = self.config.get('baseconf', 'formatname', fallback=DEFAULT_FORMAT)
-            log_print(f"Config loaded: brand={self.current_brand}")
-        except Exception as e:
-            log_print(f"Config load failed: {e}")
-            self.current_brand = DEFAULT_BRAND
-            self.current_format = DEFAULT_FORMAT
-    
-    def _save_config(self):
-        """保存配置文件"""
-        try:
-            if 'baseconf' not in self.config.sections():
-                self.config.add_section('baseconf')
-            self.config.set('baseconf', 'brand', self.current_brand)
-            self.config.set('baseconf', 'formatname', self.current_format)
-            with open(INI_FILE, 'w', encoding='utf-8') as f:
+            self.config.set("baseconf", "brand", self.oribrand)
+            self.config.set("baseconf", "formatname", self.rawformat)
+            with open(DEFAULT_INI_FILE, "w", encoding="utf-8") as f:
                 self.config.write(f)
         except Exception as e:
-            log_print(f"Config save failed: {e}")
-    
-    def _refresh_brand_list(self, priority_brand: str):
-        """刷新品牌列表，指定品牌置顶"""
-        self.brand_combo.clear()
-        brands = [priority_brand] + [b for b in RAW_FORMAT_MAP.keys() if b != priority_brand]
-        self.brand_combo.addItems(brands)
-    
-    def _on_brand_changed(self, brand: str):
-        """品牌切换"""
-        if brand in RAW_FORMAT_MAP:
-            self.current_brand = brand
-            self.current_format = RAW_FORMAT_MAP[brand]
-            log_print(f"Brand switched to {brand}")
-    
-    def _get_paths(self) -> Tuple[Optional[Path], Optional[Path]]:
-        """获取并验证输入路径"""
-        jpg_text = self.jpg_input.toPlainText().strip()
-        raw_text = self.raw_input.toPlainText().strip()
-        
-        if not jpg_text or not raw_text:
-            QMessageBox.warning(self, "错误", "请输入JPG和RAW文件路径")
-            return None, None
-        
-        jpg_path = Path(jpg_text)
-        raw_path = Path(raw_text)
-        
-        if not jpg_path.exists():
-            QMessageBox.warning(self, "错误", f"JPG路径不存在：\n{jpg_path}")
-            return None, None
-        if not raw_path.exists():
-            QMessageBox.warning(self, "错误", f"RAW路径不存在：\n{raw_path}")
-            return None, None
-        
-        return jpg_path, raw_path
-    
-    def _validate_copy(self, jpg_path: Path, raw_path: Path) -> bool:
-        """验证是否可以执行复制"""
-        if jpg_path.resolve() == raw_path.resolve():
-            QMessageBox.warning(self, "错误", "输入的路径相同，请检查")
-            return False
-        
-        jpg_files, _ = list_files(jpg_path)
-        if not has_jpg_files(jpg_files):
-            QMessageBox.warning(self, "错误", "JPG路径下没有找到JPG文件")
-            return False
-        
-        raw_files, _ = list_files(raw_path)
-        if not find_matching_raw_files(jpg_files, raw_files, self.current_format):
-            QMessageBox.warning(self, "错误", 
-                f"两路径下没有名称一致的 {self.current_format} 文件")
-            return False
-        
-        return True
-    
-    def _on_copy(self):
-        """一键复制"""
-        jpg_path, raw_path = self._get_paths()
-        if not jpg_path or not raw_path:
-            return
-        
-        if not self._validate_copy(jpg_path, raw_path):
-            return
-        
-        # 获取JPG文件列表
-        jpg_files = [f for f in os.listdir(jpg_path) 
-                     if f.lower().endswith('.jpg')]
-        
-        # 执行复制
-        copier = RawFileCopier(jpg_files, jpg_path, raw_path, self.current_format)
-        success, failed, failed_list = copier.process_all()
-        
-        # 显示结果
-        msg = f"复制完成！\n成功：{success} 个\n失败：{failed} 个"
-        if failed > 0:
-            msg += f"\n\n失败文件：{', '.join(failed_list[:5])}"
-            if len(failed_list) > 5:
-                msg += f" 等共 {len(failed_list)} 个"
-            QMessageBox.warning(self, "完成（有失败）", msg)
+            log_print(f"config write error: {e}")
+
+    def check_ini_file(self):
+        if DEFAULT_INI_FILE.exists():
+            self.config = configparser.ConfigParser()
+            self.config.read(str(DEFAULT_INI_FILE), encoding="utf-8")
+            try:
+                self.oribrand = self.config.get("baseconf", "brand")
+                self.rawformat = self.config.get("baseconf", "formatname")
+            except (configparser.NoSectionError, configparser.NoOptionError):
+                self.oribrand = "Nikon"
+                self.rawformat = ".NEF"
+                self.create_ini_file()
+            log_print("brand info loaded")
         else:
-            QMessageBox.information(self, "完成", msg)
-    
-    def _on_analyze(self):
-        """品牌自动分析"""
-        jpg_path, raw_path = self._get_paths()
-        if not jpg_path or not raw_path:
-            return
-        
-        raw_files, is_empty = list_files(raw_path)
-        if is_empty:
-            QMessageBox.warning(self, "错误", "RAW路径下不含任何文件")
-            return
-        
-        suggest_brand, message = analyze_raw_formats(raw_files)
-        if not suggest_brand:
-            QMessageBox.information(self, "分析结果", message)
-            return
-        
-        if BrandSuggestDialog.ask(message, self):
-            self._refresh_brand_list(suggest_brand)
-            self.brand_combo.setCurrentText(suggest_brand)
-    
-    def _on_view_log(self):
-        """查看日志文件"""
-        try:
-            if sys.platform == 'win32':
-                os.startfile(LOG_FILE)
+            mkdir(DEFAULT_INI_DIR)
+            self.config = configparser.ConfigParser()
+            self.oribrand = "Nikon"
+            self.rawformat = ".NEF"
+            self.create_ini_file()
+
+    def change_brand(self, brand):
+        self.oribrand = brand
+        self.rawformat = DEFAULT_RAW_FORMAT.get(self.oribrand, ".NEF")
+        log_print(f"brand manual switch to {self.oribrand}")
+        self.status_label.setText(f"当前品牌: {self.oribrand} | 格式: {self.rawformat}")
+
+    def check_log_slot(self):
+        log_path = str(DEFAULT_LOG_FILE)
+        if sys.platform == "win32":
+            os.startfile(log_path)
+        elif sys.platform == "darwin":
+            os.system(f'open "{log_path}"')
+        else:
+            os.system(f'xdg-open "{log_path}"')
+
+    def check_jpg_raw_dir(self):
+        if check_dir(self.input_rawdir) and check_dir(self.input_jpgdir):
+            if Path(self.input_rawdir).resolve() == Path(self.input_jpgdir).resolve():
+                self.warning_window("输入的路径相同，请检查")
             else:
-                import subprocess
-                subprocess.run(['xdg-open', str(LOG_FILE)])
-        except Exception as e:
-            QMessageBox.warning(self, "错误", f"无法打开日志文件：{e}")
-    
+                if self.jpg_raw_file_match():
+                    self.filecopy_valid = True
+                else:
+                    self.warning_window("两路径下没有名称一致的文件，或 JPG 路径下没有 JPG 文件")
+        else:
+            self.warning_window("JPG 或 RAW 路径非法，请检查")
+
+    def jpg_raw_file_match(self):
+        jpg_files, _ = get_files_in_dir(self.input_jpgdir)
+        if exist_jpg_file(jpg_files):
+            raw_files, _ = get_files_in_dir(self.input_rawdir)
+            return jpg_raw_file_precise_match(jpg_files, raw_files, self.rawformat)
+        return False
+
+    def get_jpgfiles_list(self):
+        p = Path(self.input_jpgdir)
+        self.jpgfileslist = [f.name for f in p.iterdir() if f.is_file() and f.suffix.lower() == ".jpg"]
+
+    def one_key_copy_slot(self):
+        self.input_jpgdir = self.jpgdir_le.text().strip()
+        self.input_rawdir = self.rawdir_le.text().strip()
+        self.filecopy_valid = False
+        self.check_jpg_raw_dir()
+        if self.filecopy_valid:
+            self.get_jpgfiles_list()
+            if not self.jpgfileslist:
+                self.warning_window("JPG 路径下没有找到 JPG 文件")
+                return
+            log_print(f"start copy file photo by {self.oribrand} device")
+            self.progress_bar.setValue(0)
+            self.onekey_copy_btn.setEnabled(False)
+            self.status_label.setText("正在复制...")
+            self.copy_worker = CopyWorker(
+                self.jpgfileslist, self.input_jpgdir, self.input_rawdir, self.rawformat
+            )
+            self.copy_worker.progress.connect(self.progress_bar.setValue)
+            self.copy_worker.finished_copy.connect(self.on_copy_finished)
+            self.copy_worker.start()
+
+    def on_copy_finished(self, success, failed, msg):
+        self.onekey_copy_btn.setEnabled(True)
+        self.status_label.setText(msg)
+        log_screen_print(msg)
+        if failed > 0:
+            self.warning_window(msg)
+        else:
+            self.info_window(msg)
+
+    def brand_list_gen(self, brand):
+        brand_list = [brand] + [k for k in DEFAULT_RAW_FORMAT.keys() if k != brand]
+        self.brand_cbb.blockSignals(True)
+        self.brand_cbb.clear()
+        self.brand_cbb.addItems(brand_list)
+        self.brand_cbb.blockSignals(False)
+        self.oribrand = brand
+        self.rawformat = DEFAULT_RAW_FORMAT.get(brand, ".NEF")
+        self.status_label.setText(f"当前品牌: {self.oribrand} | 格式: {self.rawformat}")
+
+    def brand_advice(self, local_file_list):
+        _, suffix_dict = get_all_file_suffix_info(local_file_list, exclude_jpg=True)
+        suffix_list = list(suffix_dict.keys())
+        msg, suggest_brand = construct_auto_analyze_msg(suffix_list, suffix_dict)
+        dialog = BrandDialog(msg, self.scale, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.brand_list_gen(suggest_brand)
+
+    def auto_analyze_slot(self):
+        self.input_jpgdir = self.jpgdir_le.text().strip()
+        self.input_rawdir = self.rawdir_le.text().strip()
+        if check_dir(self.input_rawdir) and check_dir(self.input_jpgdir):
+            local_files, empty_flag = get_files_in_dir(self.input_rawdir)
+            if empty_flag:
+                self.warning_window("本路径下不含任何文件，请检查路径")
+            else:
+                self.brand_advice(local_files)
+        else:
+            self.warning_window("路径非法，请检查")
+
     def closeEvent(self, event):
-        """关闭时保存配置"""
-        self._save_config()
-        log_print(f"Application closing, brand={self.current_brand}")
+        if self.copy_worker and self.copy_worker.isRunning():
+            self.copy_worker.stop()
+        self.write_ini_file()
+        log_print(f"brand change to {self.oribrand}")
         event.accept()
 
 
-# ==================== 入口 ====================
-
-if __name__ == '__main__':
-    setup_logging(LOG_FILE)
-    log_print("=" * 50)
-    log_print("Application started")
-    
+if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    # 设置应用图标（支持相对路径或打包后的路径）
-    icon_path = Path(__file__).parent / "app.ico"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
-        log_print(f"Icon loaded: {icon_path}")
-    
-    window = PicApp()
-    window.show()
-    sys.exit(app.exec())
+    pic_app = PicApp()
+    pic_app.show()
+    sys.exit(app.exec_())
